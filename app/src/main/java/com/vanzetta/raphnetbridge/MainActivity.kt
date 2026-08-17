@@ -72,17 +72,26 @@ class MainActivity : Activity() {
             }
         }
         logView = TextView(this).apply { textSize = 12f; setPadding(24, 12, 24, 24) }
-        val content = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            addView(disclaimer)
-            addView(modeButton)
-            addView(logView)
-        }
+        // Real fix: the log auto-scrolls to bottom on every new line (every ~500ms while a
+        // controller's connected), and the mode button used to live inside that same
+        // scrolling container — every log update yanked it off-screen. Only the log itself
+        // scrolls now; the disclaimer + mode button are pinned above it, always reachable.
         // A focusable ScrollView silently steals D-pad focus from the mode button below it
         // (same real gotcha already documented in the sibling 8bitdo-xbox-bridge project) —
         // this view has nothing worth focusing itself, only scrolling.
-        scroll = ScrollView(this).apply { addView(content); isFocusable = false }
-        setContentView(scroll)
+        scroll = ScrollView(this).apply { addView(logView); isFocusable = false }
+        val root = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(disclaimer)
+            addView(modeButton)
+            addView(
+                scroll,
+                android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+                ),
+            )
+        }
+        setContentView(root)
 
         val svcIntent = Intent(this, RaphnetBridgeService::class.java)
         ContextCompat.startForegroundService(this, svcIntent)
