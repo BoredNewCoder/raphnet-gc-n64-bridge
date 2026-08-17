@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bridge glyph, redesigned: two controller pills (N64 left, GC right) joined by a plug/link
+     bar — symbolizes "bridge" rather than a plain gamepad. Original geometric shapes, no
+     resemblance to raphnet's yellow/black bracket-square wordmark logo (this is an unofficial
+     third-party app, not their branding). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Left pill (N64 side) -->
+    <path
+        android:fillColor="#8C7BE0"
+        android:pathData="M22,42 L44,42 A12,12 0 0,1 44,66 L22,66 A12,12 0 0,1 22,42 Z" />
+
+    <!-- Right pill (GC side) -->
+    <path
+        android:fillColor="#DADADA"
+        android:pathData="M64,42 L86,42 A12,12 0 0,1 86,66 L64,66 A12,12 0 0,1 64,42 Z" />
+
+    <!-- Link bar joining them (the "bridge") -->
+    <path
+        android:fillColor="#F2C744"
+        android:pathData="M46,50 L62,50 L62,58 L46,58 Z" />
+
+    <!-- D-pad dot on left pill -->
+    <path
+        android:fillColor="#2B2140"
+        android:pathData="M30,50 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 Z" />
+
+    <!-- Face button dot on right pill -->
+    <path
+        android:fillColor="#2B2140"
+        android:pathData="M74,50 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0 Z" />
+</vector>

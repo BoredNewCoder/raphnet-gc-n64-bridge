@@ -1,0 +1,9 @@
+.gradle/
+.kotlin/
+build/
+app/build/
+app/.cxx/
+local.properties
+*.png
+shizuku.apk
+Raphnet_GC-N64_Bridge.apk
