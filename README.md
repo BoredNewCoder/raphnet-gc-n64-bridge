@@ -34,6 +34,9 @@ got silently dropped).
 - Change-detection on outgoing reports (only sends on real movement) —
   keeps emulator input latency low instead of flooding uinput at the
   adapter's native ~170Hz poll rate
+- USB reads are wrapped so a single bad transfer can't crash the app
+  (Android's default exception handling is process-wide, not per-thread —
+  a naive reader loop can take the whole app down over one bad transfer)
 
 ## Known limitations
 
