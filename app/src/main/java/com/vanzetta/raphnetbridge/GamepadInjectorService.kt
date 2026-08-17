@@ -17,6 +17,7 @@ class GamepadInjectorService : IGamepadInjector.Stub() {
     private external fun nativeSendReport(
         fd: Int, buttonBits: Int, x: Int, y: Int, cx: Int, cy: Int, lt: Int, rt: Int,
     )
+    private external fun nativePollFFEvent(fd: Int, timeoutMs: Int): Int
 
     companion object {
         init {
@@ -68,6 +69,11 @@ class GamepadInjectorService : IGamepadInjector.Stub() {
     override fun sendReport(buttons: Int, x: Int, y: Int, cx: Int, cy: Int, lt: Int, rt: Int) {
         if (uinputFd < 0) return
         nativeSendReport(uinputFd, buttons, x, y, cx, cy, lt, rt)
+    }
+
+    override fun pollForceFeedback(timeoutMs: Int): Int {
+        if (uinputFd < 0) return -1
+        return nativePollFFEvent(uinputFd, timeoutMs)
     }
 
     override fun destroy() {

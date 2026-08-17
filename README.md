@@ -81,6 +81,21 @@ Android keycode naming coincidence, unrelated to GameCube's own Z
 button), and **L-Analog**/**R-Analog** to the analog axis, matching real
 GameCube hardware's separate click-vs-pressure signals.
 
+**Rumble does not work, real dead end (confirmed live 2026-08-17).** The
+uinput device advertises `FF_RUMBLE` and forwards play/stop events to
+the adapter via raphnet's own documented `RQ_RNT_SET_VIBRATION` vendor
+command — the USB transfer succeeds cleanly every time, but the real
+GameCube controller never buzzes. Root cause: GameCube rumble isn't a
+host-triggerable side-channel command on real hardware — it's a bit
+embedded in the adapter's own SI-bus polling loop to the physical
+controller, entirely internal to its firmware. A clean USB ACK only
+proves the adapter's HID stack accepted the write, not that firmware
+did anything with it. Not fixable without raphnet changing this
+adapter's firmware, or reimplementing raw SI-bus polling in place of
+the adapter's own (a much bigger, uncertain job). The plumbing is left
+in place (harmless, inert) since it's correct and reusable if that ever
+changes — just don't expect it to do anything.
+
 ## Known limitations
 
 - **Only one controller at a time on this adapter** — with both an N64

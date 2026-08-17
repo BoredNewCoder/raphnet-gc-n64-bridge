@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <linux/uinput.h>
 #include <linux/input.h>
@@ -66,6 +67,12 @@ Java_com_vanzetta_raphnetbridge_GamepadInjectorService_nativeOpenUinput(JNIEnv *
     ioctl(fd, UI_SET_EVBIT, EV_KEY);
     ioctl(fd, UI_SET_EVBIT, EV_ABS);
     ioctl(fd, UI_SET_EVBIT, EV_SYN);
+    // Rumble: real request from raphnet's own vendor command RQ_RNT_SET_VIBRATION (0x07) --
+    // whether that command actually reaches the adapter is unverified (this adapter's generic
+    // command channel was found unresponsive to reads in earlier testing; SET_VIBRATION is a
+    // fire-and-forget write, untested), this just wires the Android side so it CAN be tried.
+    ioctl(fd, UI_SET_EVBIT, EV_FF);
+    ioctl(fd, UI_SET_FFBIT, FF_RUMBLE);
 
     // Bit0..15 of the raphnet report, in order, re-emitted under the SAME evdev codes the
     // adapter's own kernel driver already used (real, live-captured this session) — except
@@ -126,6 +133,7 @@ Java_com_vanzetta_raphnetbridge_GamepadInjectorService_nativeOpenUinput(JNIEnv *
     // nothing already working (Down/Right via BTN_START/BTN_THUMBL) regresses.
     dev.absmin[ABS_HAT0X] = -1; dev.absmax[ABS_HAT0X] = 1;
     dev.absmin[ABS_HAT0Y] = -1; dev.absmax[ABS_HAT0Y] = 1;
+    dev.ff_effects_max = 1; // one rumble effect slot, all we need for on/off vibration
 
     if (write(fd, &dev, sizeof(dev)) < 0) {
         LOGE("write uinput_user_dev failed: %s", strerror(errno));
@@ -198,4 +206,52 @@ Java_com_vanzetta_raphnetbridge_GamepadInjectorService_nativeSendReport(
     write_event(fd, EV_ABS, ABS_RZ, rt);
 
     write_event(fd, EV_SYN, SYN_REPORT, 0);
+}
+
+// Blocks up to timeoutMs for one force-feedback event on the uinput fd. Android's vibrator
+// subsystem (the real FF client, not Dolphin/RetroArch directly) uploads an effect once, then
+// plays/stops it by id -- upload/erase are handled right here (always accepted, we only have
+// one effect slot, see ff_effects_max above), so the caller only ever sees the actual
+// play(1)/stop(0) signal. Returns: 1=play, 0=stop, -2=timeout/no event/handled internally
+// (just call again), -1=fd invalid.
+JNIEXPORT jint JNICALL
+Java_com_vanzetta_raphnetbridge_GamepadInjectorService_nativePollFFEvent(
+        JNIEnv *env, jobject thiz, jint fd, jint timeoutMs) {
+    (void) env; (void) thiz;
+    if (fd < 0) return -1;
+
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    if (poll(&pfd, 1, timeoutMs) <= 0) return -2;
+
+    struct input_event ev;
+    if (read(fd, &ev, sizeof(ev)) != (ssize_t) sizeof(ev)) return -2;
+
+    if (ev.type == EV_UINPUT) {
+        if (ev.code == UI_FF_UPLOAD) {
+            struct uinput_ff_upload upload;
+            memset(&upload, 0, sizeof(upload));
+            upload.request_id = ev.value;
+            ioctl(fd, UI_BEGIN_FF_UPLOAD, &upload);
+            upload.retval = 0;
+            ioctl(fd, UI_END_FF_UPLOAD, &upload);
+            LOGI("FF effect uploaded (request_id=%d)", upload.request_id);
+        } else if (ev.code == UI_FF_ERASE) {
+            struct uinput_ff_erase erase;
+            memset(&erase, 0, sizeof(erase));
+            erase.request_id = ev.value;
+            ioctl(fd, UI_BEGIN_FF_ERASE, &erase);
+            erase.retval = 0;
+            ioctl(fd, UI_END_FF_ERASE, &erase);
+        }
+        return -2;
+    }
+
+    if (ev.type == EV_FF) {
+        return ev.value != 0 ? 1 : 0;
+    }
+
+    return -2;
 }

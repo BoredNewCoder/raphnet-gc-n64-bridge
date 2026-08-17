@@ -57,6 +57,33 @@ private const val REPORT_SIZE = 15
 private const val AXIS_CENTER = 16000
 private const val PREF_MODE = "controller_mode"
 
+// Real vendor command from raphnet's own firmware (github.com/raphnet/gcn64tools,
+// src/rntlib/requests.h: RQ_RNT_SET_VIBRATION), sent as [0x07, channel, vibrate] via a HID
+// class Feature Report SET_REPORT (bmRequestType 0x21, bRequest 0x09/SET_REPORT, wValue
+// (3<<8)|reportId, reportId=0 -- matches gcn64lib.c's rnt_forceVibration()/rnt_exchange()
+// exactly).
+//
+// REAL DEAD END, confirmed live 2026-08-17 -- kept wired up (harmless, inert) rather than
+// ripped out, since the Android-side plumbing (FF_RUMBLE capability, upload/play/stop
+// handling) is correct and reusable if raphnet ever ships firmware that honors this. Real
+// finding: controlTransfer succeeds cleanly every time (`result=3`, dozens of real PLAY/STOP
+// cycles during live Luigi's Mansion play, vacuum-suck rumble triggering it) -- but the user
+// felt NO physical buzz from the real GC controller. A clean USB ACK on a HID SET_REPORT only
+// proves the adapter's USB stack accepted the transport-level write; it says nothing about
+// whether application firmware acted on the payload.
+// Real root cause, understood after the fact: GameCube rumble isn't a host-triggerable
+// side-channel command at all on real hardware -- it's a single bit embedded in the adapter's
+// own SI-bus GETSTATUS polling command to the physical controller (see gcn64tools' own CLI:
+// `cmd[2] = GC_GETSTATUS3(rumble_bit)`), baked into the adapter's fixed-function polling loop.
+// RQ_RNT_SET_VIBRATION is real and defined in the shared protocol, but most likely serves
+// OTHER raphnet products with actual host-controllable rumble hardware, not this GC/N64
+// adapter's SI passthrough. Not fixable without either raphnet changing this adapter's
+// firmware, or reimplementing raw SI-bus polling ourselves in place of the adapter's own --
+// a much bigger, uncertain undertaking, not attempted.
+private const val RQ_RNT_SET_VIBRATION = 0x07
+private const val USB_HID_SET_REPORT = 0x09
+private const val USB_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE = 0x21
+
 enum class ControllerMode { N64, GC }
 
 /**
@@ -83,8 +110,12 @@ class RaphnetBridgeService : Service() {
     private lateinit var usbManager: UsbManager
     private var readerThread: Thread? = null
     private var injectorThread: Thread? = null
+    private var ffThread: Thread? = null
     @Volatile private var running = false
     private var connection: UsbDeviceConnection? = null
+    // Real interface number for the vibration control transfer's wIndex -- stored at claim
+    // time (startSession) since UsbInterface itself was previously only a local there.
+    private var hidInterfaceId = -1
     // Single-slot mailbox between readLoop (producer) and injectLoop (consumer): decouples the
     // USB read from the Shizuku cross-process Binder call. Previously sendReport() ran inline
     // on the reader thread — if that IPC call ever stalled (GC pause, scheduler jitter), it
@@ -310,19 +341,63 @@ class RaphnetBridgeService : Service() {
 
         log("Interface claimed. IN ep=0x${epIn.address.toString(16)}. Starting read + inject loops...")
         connection = conn
+        hidInterfaceId = iface.id
         running = true
         readerThread = thread(name = "raphnet-reader") { readLoop(conn, epIn) }
         injectorThread = thread(name = "raphnet-injector") { injectLoop() }
+        ffThread = thread(name = "raphnet-ff") { ffPollLoop() }
     }
 
     private fun stopSession() {
         running = false
         readerThread?.join(500)
         injectorThread?.join(500)
+        ffThread?.join(500)
         runCatching { connection?.close() }
         connection = null
+        hidInterfaceId = -1
         readerThread = null
         injectorThread = null
+        ffThread = null
+    }
+
+    // Real client here is Android's own vibrator subsystem, not Dolphin/RetroArch directly --
+    // it uploads one rumble effect against our uinput device then plays/stops it by id.
+    // pollForceFeedback() blocks (natively, via poll()) so this loop doesn't spin; the 200ms
+    // timeout just lets it notice `running` going false promptly on stop, same pattern as
+    // injectLoop's queue poll.
+    private fun ffPollLoop() {
+        while (running) {
+            val result = runCatching { injector?.pollForceFeedback(200) ?: -2 }
+                .getOrElse { log("ff poll failed: ${it.message}"); -2 }
+            if (result == 0 || result == 1) {
+                log("Force-feedback ${if (result == 1) "PLAY" else "STOP"} -- sending SET_VIBRATION to adapter")
+                sendVibration(result == 1)
+            }
+        }
+    }
+
+    // Real, live-confirmed 2026-08-17: this exact adapter's generic rnt_exchange command
+    // channel didn't answer reads (GET_VERSION/GET_CONTROLLER_TYPE both empty after full
+    // polling) -- but SET_REPORT itself (the write direction) succeeded without error at
+    // every size tried. This is a one-way fire-and-forget write, so it's a real, live,
+    // previously-untested question whether the adapter's firmware acts on it -- log the
+    // controlTransfer result either way so a failure is visible, not silent.
+    private fun sendVibration(on: Boolean) {
+        val conn = connection ?: return
+        if (hidInterfaceId < 0) return
+        val data = byteArrayOf(RQ_RNT_SET_VIBRATION.toByte(), 0, if (on) 1 else 0)
+        val result = runCatching {
+            conn.controlTransfer(
+                USB_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE,
+                USB_HID_SET_REPORT,
+                (3 shl 8) or 0, // Feature report, report ID 0 -- matches gcn64lib's rnt_exchange
+                hidInterfaceId,
+                data, data.size, 1000,
+            )
+        }.getOrElse { log("SET_VIBRATION controlTransfer threw: ${it.message}"); -1 }
+        log("SET_VIBRATION(on=$on) controlTransfer result=$result" +
+            (if (result < 0) " (FAILED -- adapter likely doesn't act on this command)" else ""))
     }
 
     private var lastLogAtMs = 0L

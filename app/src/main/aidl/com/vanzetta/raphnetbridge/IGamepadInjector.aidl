@@ -12,5 +12,12 @@ interface IGamepadInjector {
     // close-then-reopen under the new name rather than renaming in place.
     void openDevice(String name);
     void sendReport(int buttons, int x, int y, int cx, int cy, int lt, int rt);
+    // Blocks up to timeoutMs waiting for a force-feedback event on the uinput device (Android's
+    // vibrator subsystem is the real client here, not Dolphin/RetroArch directly -- it uploads
+    // one rumble effect then plays/stops it by id). Upload/erase handshakes are handled
+    // internally (always accepted, single-effect device); returns 1 on play, 0 on stop, -2 on
+    // timeout/no event/handled-internally (caller should just call again), -1 if the device
+    // isn't open.
+    int pollForceFeedback(int timeoutMs);
     void destroy();
 }
