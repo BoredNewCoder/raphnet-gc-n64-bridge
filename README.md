@@ -59,6 +59,28 @@ got silently dropped).
   a one-time per-device setup step, same as any brand-new controller
   identity, not an app bug.
 
+## Dolphin support
+
+Also works with the [Dolphin](https://dolphin-emu.org/) Android app for
+GameCube emulation — device shows up the same way as in RetroArch
+("Raphnet GC Bridge Gamepad" in Dolphin's Device picker under
+GameCube Input → Controller 1 → Configure, once the port's type is set
+to **Standard Controller**, not the GameCube Adapter preset).
+
+D-Pad is emitted as a real `ABS_HAT0X`/`ABS_HAT0Y` hat axis (in addition
+to, but no longer conflicting with, the discrete per-direction bits used
+elsewhere) — Dolphin's own Android controller listener doesn't treat
+`BUTTON_SELECT`/`BUTTON_1` (the discrete codes bit10/bit12 go out on) as
+bindable GameCube buttons the way RetroArch's does, even though both
+codes are real, live-confirmed to fire and translate to genuine Android
+keycodes. The hat axis is the conventional D-Pad representation nearly
+every emulator's Android backend expects, so it binds cleanly instead.
+L/R triggers: bind the **L**/**R** rows to the real digital click bits
+(`BUTTON_Y`/`BUTTON_Z` in Dolphin's capture, matching bit4/bit5 — an
+Android keycode naming coincidence, unrelated to GameCube's own Z
+button), and **L-Analog**/**R-Analog** to the analog axis, matching real
+GameCube hardware's separate click-vs-pressure signals.
+
 ## Known limitations
 
 - **Only one controller at a time on this adapter** — with both an N64

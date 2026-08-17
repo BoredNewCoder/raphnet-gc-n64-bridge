@@ -91,7 +91,7 @@ Java_com_vanzetta_raphnetbridge_GamepadInjectorService_nativeOpenUinput(JNIEnv *
         ioctl(fd, UI_SET_KEYBIT, buttons[i]);
     }
 
-    static const int absAxes[] = { ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ };
+    static const int absAxes[] = { ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y };
     for (size_t i = 0; i < sizeof(absAxes) / sizeof(absAxes[0]); i++) {
         ioctl(fd, UI_SET_ABSBIT, absAxes[i]);
     }
@@ -116,6 +116,16 @@ Java_com_vanzetta_raphnetbridge_GamepadInjectorService_nativeOpenUinput(JNIEnv *
     // (non-FULL_SLIDERS) mode — Java side pre-subtracts 16000 the same way.
     dev.absmin[ABS_Z] = 0; dev.absmax[ABS_Z] = 16000;
     dev.absmin[ABS_RZ] = 0; dev.absmax[ABS_RZ] = 16000;
+    // D-Pad as a hat/POV axis, -1/0/1 per axis — the conventional representation nearly
+    // every emulator's Android controller backend (Dolphin included) binds D-Pad to by
+    // default, distinct from the discrete BTN_SELECT/BTN_0/etc bits above. Those discrete
+    // bits are real, live-confirmed to fire correctly (getevent) and translate to real
+    // Android keycodes (Generic.kl), but Dolphin's own Android input listener doesn't
+    // treat BUTTON_SELECT/BUTTON_1 as bindable GameCube buttons the way RetroArch's does —
+    // added this axis pair as a second, parallel path rather than replacing the bits, so
+    // nothing already working (Down/Right via BTN_START/BTN_THUMBL) regresses.
+    dev.absmin[ABS_HAT0X] = -1; dev.absmax[ABS_HAT0X] = 1;
+    dev.absmin[ABS_HAT0Y] = -1; dev.absmax[ABS_HAT0Y] = 1;
 
     if (write(fd, &dev, sizeof(dev)) < 0) {
         LOGE("write uinput_user_dev failed: %s", strerror(errno));
@@ -159,9 +169,26 @@ Java_com_vanzetta_raphnetbridge_GamepadInjectorService_nativeSendReport(
         BTN_TL, BTN_TR, BTN_TL2, BTN_TR2, BTN_SELECT, BTN_START,
         BTN_0, BTN_THUMBL, BTN_THUMBR,
     };
+    // Skip bits 10-13 (D-Pad Up/Down/Left/Right) here — real, live-confirmed 2026-08-17:
+    // Dolphin's Android controller-config auto-detect captures WHATEVER changes in the same
+    // input batch, so emitting both the discrete button AND the hat axis below for the same
+    // D-pad press made every binding come out as a two-input "Button & Axis" chord instead of
+    // a clean single input. The discrete codes for these 4 bits (BTN_SELECT/BTN_START/BTN_0/
+    // BTN_THUMBL) stay registered as valid keybits at device-creation time above (harmless,
+    // unused) — only emission here is suppressed, so the hat axis is the sole live signal.
     for (size_t i = 0; i < sizeof(buttonCodes) / sizeof(buttonCodes[0]); i++) {
+        if (i >= 10 && i <= 13) continue;
         write_event(fd, EV_KEY, buttonCodes[i], (buttonBits & (1 << i)) ? 1 : 0);
     }
+
+    // D-Pad hat axis, derived from the same raw bits 10-13 already unpacked above (bit10 Up,
+    // bit11 Down, bit12 Left, bit13 Right — see the buttons[] table comment in
+    // nativeOpenUinput). Standard Linux joystick hat convention: negative HAT0Y is up,
+    // negative HAT0X is left.
+    int hatY = (buttonBits & (1 << 10)) ? -1 : (buttonBits & (1 << 11)) ? 1 : 0;
+    int hatX = (buttonBits & (1 << 12)) ? -1 : (buttonBits & (1 << 13)) ? 1 : 0;
+    write_event(fd, EV_ABS, ABS_HAT0X, hatX);
+    write_event(fd, EV_ABS, ABS_HAT0Y, hatY);
 
     write_event(fd, EV_ABS, ABS_X, x);
     write_event(fd, EV_ABS, ABS_Y, y);
