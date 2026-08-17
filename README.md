@@ -35,11 +35,26 @@ got silently dropped).
   keeps emulator input latency low instead of flooding uinput at the
   adapter's native ~170Hz poll rate
 
-## What's in progress
+## Known limitations
 
-- GameCube mode currently shares N64's device identity/binds — GC gets
-  its own auto-detected profile in a future update
-- GameCube main stick Y-axis is inverted — known issue, not yet fixed
+- **GameCube mode shares N64's device identity/binds** — no separate
+  RetroArch profile yet. Auto-detecting GC vs N64 via the adapter's
+  `RQ_RNT_GET_CONTROLLER_TYPE` vendor command was investigated and
+  ruled out: this adapter's firmware doesn't respond on that command
+  channel at all in normal mode (confirmed live — not just one failed
+  attempt, a sanity check with a simpler command also got no response).
+  Next real step is a manual N64/GC mode toggle in-app instead of
+  auto-detection.
+- **GameCube main stick Y-axis is inverted** — confirmed live, not yet
+  fixed. Blocked on the item above (needs a GC-specific correction;
+  touching the shared axis code risks breaking N64's already-working
+  stick).
+- **Only one controller at a time on this adapter** — with both an N64
+  and a GameCube controller plugged into the adapter's two physical
+  ports simultaneously, button reads stop working entirely (axes still
+  update). This is a real firmware behavior (the adapter only actively
+  polls one channel at a time despite having two ports), not something
+  fixable from this app's side. Unplug one if buttons stop responding.
 
 ## Requirements
 
