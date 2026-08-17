@@ -6,6 +6,11 @@ package com.vanzetta.raphnetbridge;
 // process gets us a real uinput-backed virtual gamepad, bypassing Android's InputManager
 // (and its BTN_MODE/D-Pad-Left system-level interception) entirely.
 interface IGamepadInjector {
+    // Creates (or recreates, if already open) the uinput device under the given name. Called
+    // once on first connect, and again whenever the user switches N64/GC mode in-app -- Linux
+    // uinput fixes a device's name for the lifetime of its fd, so a mode switch means
+    // close-then-reopen under the new name rather than renaming in place.
+    void openDevice(String name);
     void sendReport(int buttons, int x, int y, int cx, int cy, int lt, int rt);
     void destroy();
 }

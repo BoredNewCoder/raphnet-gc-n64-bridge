@@ -55,6 +55,9 @@ private const val RAPHNET_PID = 96
 private const val REPORT_ID_GAMEPAD = 1
 private const val REPORT_SIZE = 15
 private const val AXIS_CENTER = 16000
+private const val PREF_MODE = "controller_mode"
+
+enum class ControllerMode { N64, GC }
 
 /**
  * Owns the USB session (reading the raphnet adapter's raw HID reports directly via
@@ -95,14 +98,48 @@ class RaphnetBridgeService : Service() {
     private fun isController(device: UsbDevice) =
         device.vendorId == RAPHNET_VID && device.productId == RAPHNET_PID
 
+    // Manual N64/GC mode toggle — replaces the auto-detect approach investigated and ruled
+    // out 2026-08-17 (RQ_RNT_GET_CONTROLLER_TYPE: whole rntlib command channel unresponsive
+    // on this adapter in normal mode, confirmed live via a working sanity check, not just one
+    // failed guess). Mode picks the uinput device NAME, which is all RetroArch's autoconfig
+    // keys off — giving N64 and GC distinct names means each gets its own independently
+    // bound/saved RetroArch profile instead of silently sharing (and overwriting) one.
+    private val prefs by lazy { getSharedPreferences("raphnet_bridge_prefs", Context.MODE_PRIVATE) }
+    @Volatile private var mode: ControllerMode = ControllerMode.N64
+
+    private fun loadMode(): ControllerMode =
+        if (prefs.getString(PREF_MODE, "N64") == "GC") ControllerMode.GC else ControllerMode.N64
+
+    private fun deviceNameFor(m: ControllerMode) = when (m) {
+        ControllerMode.N64 -> "Raphnet N64 Bridge Gamepad"
+        ControllerMode.GC -> "Raphnet GC Bridge Gamepad"
+    }
+
+    fun getControllerMode(): ControllerMode = mode
+
+    // Called from MainActivity's toggle. Persists, then recreates the uinput device under the
+    // new name if the injector is already connected (uinput can't rename a live fd — see
+    // GamepadInjectorService.openDevice's comment).
+    fun setControllerMode(m: ControllerMode) {
+        mode = m
+        prefs.edit().putString(PREF_MODE, m.name).apply()
+        val name = deviceNameFor(m)
+        log("Controller mode set to $m — uinput device: $name")
+        runCatching { injector?.openDevice(name) }
+            .onFailure { log("openDevice failed: ${it.message}") }
+    }
+
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(BuildConfig.APPLICATION_ID, GamepadInjectorService::class.java.name)
-    ).daemon(false).processNameSuffix("injector").debuggable(false).version(1)
+    ).daemon(false).processNameSuffix("injector").debuggable(false).version(2)
 
     private val userServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             injector = IGamepadInjector.Stub.asInterface(binder)
-            log("Shizuku injector service connected — uinput gamepad ready.")
+            val deviceName = deviceNameFor(mode)
+            log("Shizuku injector service connected — opening uinput device: $deviceName")
+            runCatching { injector?.openDevice(deviceName) }
+                .onFailure { log("openDevice failed: ${it.message}") }
         }
         override fun onServiceDisconnected(name: ComponentName) {
             injector = null
@@ -172,6 +209,7 @@ class RaphnetBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        mode = loadMode()
         startInForeground()
 
         val permFilter = IntentFilter(ACTION_USB_PERMISSION)
@@ -319,11 +357,18 @@ class RaphnetBridgeService : Service() {
             }
 
             val x = le16(buf, 1) - AXIS_CENTER
-            val y = -(le16(buf, 3) - AXIS_CENTER) // firmware inverts Y on the way out; un-invert
+            var y = -(le16(buf, 3) - AXIS_CENTER) // firmware inverts Y on the way out; un-invert
             val cx = le16(buf, 5) - AXIS_CENTER
             val cy = -(le16(buf, 7) - AXIS_CENTER) // same inversion as Y
             val lt = (le16(buf, 9) - AXIS_CENTER).coerceAtLeast(0)
             val rt = (le16(buf, 11) - AXIS_CENTER).coerceAtLeast(0)
+
+            // Real, live-confirmed 2026-08-17: GameCube's main stick Y comes out backwards
+            // relative to N64 even after the shared un-invert above (pushing GC stick up
+            // measured y=+16000, which reads as down once bound in RetroArch — N64 has been
+            // extensively live-tested correct with the un-inverted formula across a full real
+            // play session, so only GC gets this extra flip, not the shared formula itself).
+            if (mode == ControllerMode.GC) y = -y
             val buttons = (buf[13].toInt() and 0xFF) or ((buf[14].toInt() and 0xFF) shl 8)
 
             val now = SystemClock.elapsedRealtime()

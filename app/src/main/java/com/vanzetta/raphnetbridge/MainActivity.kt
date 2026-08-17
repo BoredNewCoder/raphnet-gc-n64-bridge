@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
+import android.widget.Button
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.ContextCompat
@@ -20,7 +21,13 @@ class MainActivity : Activity() {
 
     private lateinit var logView: TextView
     private lateinit var scroll: ScrollView
+    private lateinit var modeButton: Button
     private var service: RaphnetBridgeService? = null
+
+    private fun refreshModeButton() {
+        val m = service?.getControllerMode() ?: ControllerMode.N64
+        modeButton.text = "Mode: $m (tap to switch to ${if (m == ControllerMode.N64) "GC" else "N64"})"
+    }
 
     private val logListener: (String) -> Unit = { line ->
         runOnUiThread {
@@ -36,6 +43,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 logView.text = svc.getLogHistory()
                 scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+                refreshModeButton()
             }
             svc.setLogListener(logListener)
         }
@@ -54,13 +62,26 @@ class MainActivity : Activity() {
             setTextColor(0xFFAAAAAA.toInt())
             setPadding(24, 24, 24, 0)
         }
+        modeButton = Button(this).apply {
+            text = "Mode: N64 (tap to switch to GC)"
+            setOnClickListener {
+                val current = service?.getControllerMode() ?: ControllerMode.N64
+                val next = if (current == ControllerMode.N64) ControllerMode.GC else ControllerMode.N64
+                service?.setControllerMode(next)
+                refreshModeButton()
+            }
+        }
         logView = TextView(this).apply { textSize = 12f; setPadding(24, 12, 24, 24) }
         val content = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             addView(disclaimer)
+            addView(modeButton)
             addView(logView)
         }
-        scroll = ScrollView(this).apply { addView(content) }
+        // A focusable ScrollView silently steals D-pad focus from the mode button below it
+        // (same real gotcha already documented in the sibling 8bitdo-xbox-bridge project) —
+        // this view has nothing worth focusing itself, only scrolling.
+        scroll = ScrollView(this).apply { addView(content); isFocusable = false }
         setContentView(scroll)
 
         val svcIntent = Intent(this, RaphnetBridgeService::class.java)

@@ -44,13 +44,25 @@ class GamepadInjectorService : IGamepadInjector.Stub() {
 
     init {
         killStaleSiblings()
+        // Device is opened lazily via openDevice(), not here — the caller decides the name
+        // (N64 vs GC mode, see RaphnetBridgeService), and Linux uinput needs the real name up
+        // front at creation time, unlike a no-arg constructor Shizuku's contract requires here.
+    }
+
+    override fun openDevice(name: String) {
+        // uinput fixes a device's name for its fd's lifetime — a mode switch means close (if
+        // one's already open) then recreate under the new name, not rename in place.
+        if (uinputFd >= 0) {
+            nativeCloseUinput(uinputFd)
+            uinputFd = -1
+        }
         // Name must NOT contain the substring "Virtual" -- RetroArch's Android input driver
         // (input/drivers/android_input.c) hardcodes a special case that relabels any device
         // whose name contains "Virtual" as "SHIELD Virtual Controller" (meant for the
         // Shield remote's NVIDIA-button/CEC virtual device) — confirmed as a real bug hit
         // and fixed once already in the sibling 8bitdo-xbox-bridge project.
-        uinputFd = runCatching { nativeOpenUinput("Raphnet GC-N64 Bridge Gamepad") }.getOrElse { -1 }
-        Log.d(TAG, "uinput gamepad fd=$uinputFd")
+        uinputFd = runCatching { nativeOpenUinput(name) }.getOrElse { -1 }
+        Log.d(TAG, "uinput gamepad '$name' fd=$uinputFd")
     }
 
     override fun sendReport(buttons: Int, x: Int, y: Int, cx: Int, cy: Int, lt: Int, rt: Int) {
