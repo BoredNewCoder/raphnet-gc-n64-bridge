@@ -343,17 +343,35 @@ class RaphnetBridgeService : Service() {
     private var lastSentLt = 0; private var lastSentRt = 0
     private val AXIS_DEADZONE = 200
 
+    // Real crash-safety fix, same class of bug found+fixed in the sibling ds3-charger-app
+    // this session: bulkTransfer() ran with no try/catch. Android's default
+    // UncaughtExceptionHandler is process-wide, not per-thread — an uncaught exception on
+    // ANY thread (this reader thread included) kills the WHOLE app, not just this loop. If
+    // bulkTransfer ever threw instead of returning a negative result (device yanked mid-call,
+    // permission revoked), the entire app would go down. Catching Throwable per-iteration
+    // means one bad transfer just gets logged and retried, not fatal.
     private fun readLoop(conn: UsbDeviceConnection, epIn: UsbEndpoint) {
         val buf = ByteArray(64)
         while (running) {
+            try {
+                readLoopIteration(conn, epIn, buf)
+            } catch (e: Throwable) {
+                log("readLoop iteration failed: ${e.message}")
+                Thread.sleep(20)
+            }
+        }
+        log("Read loop stopped after $packetsSeen packets.")
+    }
+
+    private fun readLoopIteration(conn: UsbDeviceConnection, epIn: UsbEndpoint, buf: ByteArray) {
             val n = conn.bulkTransfer(epIn, buf, buf.size, 2000)
-            if (n <= 0) { Thread.sleep(20); continue }
+            if (n <= 0) { Thread.sleep(20); return }
             packetsSeen++
 
             if (buf[0].toInt() != REPORT_ID_GAMEPAD || n < REPORT_SIZE) {
                 // Real device also emits Report ID 2 (PID/force-feedback state) per its own
                 // descriptor — not the gamepad input report, ignore it here.
-                continue
+                return
             }
 
             val x = le16(buf, 1) - AXIS_CENTER
@@ -394,8 +412,6 @@ class RaphnetBridgeService : Service() {
                 lastSentCx = cx; lastSentCy = cy
                 lastSentLt = lt; lastSentRt = rt
             }
-        }
-        log("Read loop stopped after $packetsSeen packets.")
     }
 
     private fun injectLoop() {
