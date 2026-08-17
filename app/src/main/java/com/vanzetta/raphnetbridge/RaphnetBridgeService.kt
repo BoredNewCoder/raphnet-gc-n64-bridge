@@ -79,8 +79,16 @@ class RaphnetBridgeService : Service() {
 
     private lateinit var usbManager: UsbManager
     private var readerThread: Thread? = null
+    private var injectorThread: Thread? = null
     @Volatile private var running = false
     private var connection: UsbDeviceConnection? = null
+    // Single-slot mailbox between readLoop (producer) and injectLoop (consumer): decouples the
+    // USB read from the Shizuku cross-process Binder call. Previously sendReport() ran inline
+    // on the reader thread — if that IPC call ever stalled (GC pause, scheduler jitter), it
+    // directly delayed the next bulkTransfer read, risking missed/uneven polls at the
+    // adapter's ~170Hz native rate. Capacity 1 + poll-before-offer keeps only the latest
+    // pending report, which is exactly what we want (no benefit to queuing stale input).
+    private val reportQueue = java.util.concurrent.ArrayBlockingQueue<IntArray>(1)
 
     @Volatile private var injector: IGamepadInjector? = null
 
@@ -262,18 +270,21 @@ class RaphnetBridgeService : Service() {
         if (conn == null) { log("ERROR: openDevice failed"); return }
         if (!conn.claimInterface(iface, true)) { log("ERROR: claimInterface failed"); return }
 
-        log("Interface claimed. IN ep=0x${epIn.address.toString(16)}. Starting read loop...")
+        log("Interface claimed. IN ep=0x${epIn.address.toString(16)}. Starting read + inject loops...")
         connection = conn
         running = true
         readerThread = thread(name = "raphnet-reader") { readLoop(conn, epIn) }
+        injectorThread = thread(name = "raphnet-injector") { injectLoop() }
     }
 
     private fun stopSession() {
         running = false
         readerThread?.join(500)
+        injectorThread?.join(500)
         runCatching { connection?.close() }
         connection = null
         readerThread = null
+        injectorThread = null
     }
 
     private var lastLogAtMs = 0L
@@ -331,8 +342,8 @@ class RaphnetBridgeService : Service() {
                 moved(lt, lastSentLt) || moved(rt, lastSentRt)
 
             if (changed) {
-                runCatching { injector?.sendReport(buttons, x, y, cx, cy, lt, rt) }
-                    .onFailure { log("inject failed: ${it.message}") }
+                reportQueue.poll() // drop any stale unconsumed report, keep only latest
+                reportQueue.offer(intArrayOf(buttons, x, y, cx, cy, lt, rt))
                 lastSentButtons = buttons
                 lastSentX = x; lastSentY = y
                 lastSentCx = cx; lastSentCy = cy
@@ -340,6 +351,16 @@ class RaphnetBridgeService : Service() {
             }
         }
         log("Read loop stopped after $packetsSeen packets.")
+    }
+
+    private fun injectLoop() {
+        while (running) {
+            val r = runCatching {
+                reportQueue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS)
+            }.getOrNull() ?: continue
+            runCatching { injector?.sendReport(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) }
+                .onFailure { log("inject failed: ${it.message}") }
+        }
     }
 
     private fun le16(buf: ByteArray, offset: Int): Int =
