@@ -38,20 +38,29 @@ got silently dropped).
   (Android's default exception handling is process-wide, not per-thread —
   a naive reader loop can take the whole app down over one bad transfer)
 
+## What works (continued)
+
+- **N64/GC mode toggle** — tap the button under the log in-app to switch.
+  Persisted across restarts, picks a distinct uinput device name per mode
+  ("Raphnet N64 Bridge Gamepad" / "Raphnet GC Bridge Gamepad") so
+  RetroArch keeps fully independent, non-colliding autoconfig profiles
+  for each. Replaces an earlier auto-detect attempt via the adapter's
+  `RQ_RNT_GET_CONTROLLER_TYPE` vendor command, which was investigated
+  and ruled out — this adapter's firmware doesn't respond on that
+  command channel at all in normal mode (confirmed live via a sanity
+  check with a simpler command too, not just one failed attempt).
+- **GameCube main stick Y-axis fix** — GC mode applies a confirmed
+  correction for the raw stick reading coming out inverted; N64's
+  formula is untouched (already validated correct across a full real
+  play session before this fix existed).
+- Main stick and C-stick both confirmed live at the raw USB level for
+  GameCube mode too — full range, clean values, no dead zone on either
+  axis. Binding them (and the rest of GC's RetroPad set) in RetroArch is
+  a one-time per-device setup step, same as any brand-new controller
+  identity, not an app bug.
+
 ## Known limitations
 
-- **GameCube mode shares N64's device identity/binds** — no separate
-  RetroArch profile yet. Auto-detecting GC vs N64 via the adapter's
-  `RQ_RNT_GET_CONTROLLER_TYPE` vendor command was investigated and
-  ruled out: this adapter's firmware doesn't respond on that command
-  channel at all in normal mode (confirmed live — not just one failed
-  attempt, a sanity check with a simpler command also got no response).
-  Next real step is a manual N64/GC mode toggle in-app instead of
-  auto-detection.
-- **GameCube main stick Y-axis is inverted** — confirmed live, not yet
-  fixed. Blocked on the item above (needs a GC-specific correction;
-  touching the shared axis code risks breaking N64's already-working
-  stick).
 - **Only one controller at a time on this adapter** — with both an N64
   and a GameCube controller plugged into the adapter's two physical
   ports simultaneously, button reads stop working entirely (axes still
@@ -109,8 +118,11 @@ see step 5).
    work without it.
 4. Open this app, grant it Shizuku permission when prompted.
 5. Plug in the raphnet adapter with a GC or N64 controller attached.
-6. In RetroArch, the device will show up as **"Raphnet GC-N64 Bridge
-   Gamepad"** — bind normally, D-Pad Left now works.
+6. In-app, tap the mode button to match whichever controller you have
+   connected (defaults to N64).
+7. In RetroArch, the device will show up as **"Raphnet N64 Bridge
+   Gamepad"** or **"Raphnet GC Bridge Gamepad"** depending on the mode
+   you picked — bind normally, D-Pad Left now works.
 
 ### Why Shizuku is required
 
