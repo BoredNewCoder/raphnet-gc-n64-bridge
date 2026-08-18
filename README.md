@@ -81,20 +81,33 @@ Android keycode naming coincidence, unrelated to GameCube's own Z
 button), and **L-Analog**/**R-Analog** to the analog axis, matching real
 GameCube hardware's separate click-vs-pressure signals.
 
-**Rumble does not work, real dead end (confirmed live 2026-08-17).** The
-uinput device advertises `FF_RUMBLE` and forwards play/stop events to
-the adapter via raphnet's own documented `RQ_RNT_SET_VIBRATION` vendor
-command — the USB transfer succeeds cleanly every time, but the real
-GameCube controller never buzzes. Root cause: GameCube rumble isn't a
-host-triggerable side-channel command on real hardware — it's a bit
-embedded in the adapter's own SI-bus polling loop to the physical
-controller, entirely internal to its firmware. A clean USB ACK only
-proves the adapter's HID stack accepted the write, not that firmware
-did anything with it. Not fixable without raphnet changing this
-adapter's firmware, or reimplementing raw SI-bus polling in place of
-the adapter's own (a much bigger, uncertain job). The plumbing is left
-in place (harmless, inert) since it's correct and reusable if that ever
-changes — just don't expect it to do anything.
+**Rumble works — real fix, live-confirmed 2026-08-17.** The earlier
+"dead end" (below, kept for history) was diagnosed via raphnet's own
+vendor command `RQ_RNT_SET_VIBRATION`, sent as a Feature Report on
+report ID 0 — that whole command channel turned out to be unresponsive
+on this adapter for *any* request, not just vibration (even a plain
+GET_VERSION probe got no answer). The real fix, found by reading
+raphnet's firmware source (`github.com/raphnet/gc_n64_usb-v3`,
+`usbpad.c`'s `usbpad_hid_set_report`) instead of guessing: this adapter
+implements a genuine USB HID PID force-feedback **Output-Report** state
+machine on report IDs 1/5/0x0A — a different, simpler channel (plain
+`SET_REPORT`, no response needed) than the broken vendor-command one.
+`sendVibration()` now drives that state machine directly (set effect
+duration → set constant-force magnitude → start/stop). Confirmed live
+with the real N64 controller + Rumble Pak — the controller genuinely
+buzzes.
+
+<details>
+<summary>Old dead-end writeup (superseded, kept for history)</summary>
+
+The uinput device advertises `FF_RUMBLE` and forwarded play/stop events
+to the adapter via raphnet's documented `RQ_RNT_SET_VIBRATION` vendor
+command — the USB transfer succeeded cleanly every time, but the real
+controller never buzzed. Root cause turned out to be a dead command
+channel (see above), not an unfixable hardware limitation as first
+assumed.
+
+</details>
 
 ## Known limitations
 

@@ -29,6 +29,7 @@ import rikka.shizuku.Shizuku
 
 private const val TAG = "RaphnetBridge"
 private const val ACTION_USB_PERMISSION = "com.vanzetta.raphnetbridge.USB_PERMISSION"
+private const val ACTION_TEST_RUMBLE = "com.vanzetta.raphnetbridge.TEST_RUMBLE"
 private const val SHIZUKU_PERMISSION_REQUEST_CODE = 4243
 private const val NOTIF_CHANNEL_ID = "raphnet_bridge_service"
 private const val NOTIF_ID = 1
@@ -57,30 +58,29 @@ private const val REPORT_SIZE = 15
 private const val AXIS_CENTER = 16000
 private const val PREF_MODE = "controller_mode"
 
-// Real vendor command from raphnet's own firmware (github.com/raphnet/gcn64tools,
-// src/rntlib/requests.h: RQ_RNT_SET_VIBRATION), sent as [0x07, channel, vibrate] via a HID
-// class Feature Report SET_REPORT (bmRequestType 0x21, bRequest 0x09/SET_REPORT, wValue
-// (3<<8)|reportId, reportId=0 -- matches gcn64lib.c's rnt_forceVibration()/rnt_exchange()
-// exactly).
+// SUPERSEDED 2026-08-17: the vendor command RQ_RNT_SET_VIBRATION (0x07, sent as a Feature
+// Report on report ID 0) is a real dead end -- confirmed live that this adapter's whole
+// generic rntlib command channel (report ID 0, Feature type) is unresponsive to ANY command
+// on this device in normal mode, even a trivial GET_VERSION probe. controlTransfer ACKing
+// (`result=3`) only proved the transport-level write was accepted, not that firmware ever
+// read cmdbuf off that dead channel.
 //
-// REAL DEAD END, confirmed live 2026-08-17 -- kept wired up (harmless, inert) rather than
-// ripped out, since the Android-side plumbing (FF_RUMBLE capability, upload/play/stop
-// handling) is correct and reusable if raphnet ever ships firmware that honors this. Real
-// finding: controlTransfer succeeds cleanly every time (`result=3`, dozens of real PLAY/STOP
-// cycles during live Luigi's Mansion play, vacuum-suck rumble triggering it) -- but the user
-// felt NO physical buzz from the real GC controller. A clean USB ACK on a HID SET_REPORT only
-// proves the adapter's USB stack accepted the transport-level write; it says nothing about
-// whether application firmware acted on the payload.
-// Real root cause, understood after the fact: GameCube rumble isn't a host-triggerable
-// side-channel command at all on real hardware -- it's a single bit embedded in the adapter's
-// own SI-bus GETSTATUS polling command to the physical controller (see gcn64tools' own CLI:
-// `cmd[2] = GC_GETSTATUS3(rumble_bit)`), baked into the adapter's fixed-function polling loop.
-// RQ_RNT_SET_VIBRATION is real and defined in the shared protocol, but most likely serves
-// OTHER raphnet products with actual host-controllable rumble hardware, not this GC/N64
-// adapter's SI passthrough. Not fixable without either raphnet changing this adapter's
-// firmware, or reimplementing raw SI-bus polling ourselves in place of the adapter's own --
-// a much bigger, uncertain undertaking, not attempted.
-private const val RQ_RNT_SET_VIBRATION = 0x07
+// Real fix: read raphnet's own firmware source directly (github.com/raphnet/gc_n64_usb-v3,
+// usbpad.c's usbpad_hid_set_report()) instead of guessing. It implements a genuine USB HID
+// PID (Physical Interface Device) force-feedback Output-Report state machine on the SAME
+// interface as the gamepad reports -- a completely different, simpler channel than the dead
+// rntlib one: plain SET_REPORT (Output type=2) control transfers, no response needed at all
+// (sidesteps the exact GET_REPORT-never-answers bug that killed the vendor-command path).
+// usbpad_mustVibrate() reads this state machine and drives pads[channel]->setVibration() --
+// real confirmed wiring to the actual SI-bus rumble bit. This is genuinely the same mechanism
+// Windows/Project64 and native Dolphin use (firmware comment: "With dolphin, an infinite
+// duration is set"). Never tried before this fix -- worth a real live test.
+private const val REPORT_SET_EFFECT = 0x01          // usbpad.c: sets effect duration
+private const val REPORT_SET_CONSTANT_FORCE = 0x05  // usbpad.c: sets rumble magnitude
+private const val REPORT_EFFECT_OPERATION = 0x0A    // usbpad.c: start/stop, len must be 4
+private const val EFFECT_OP_START = 1
+private const val EFFECT_OP_STOP = 3
+private const val HID_REPORT_TYPE_OUTPUT = 2
 private const val USB_HID_SET_REPORT = 0x09
 private const val USB_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE = 0x21
 
@@ -237,6 +237,20 @@ class RaphnetBridgeService : Service() {
         }
     }
 
+    // Debug-only hook for live-testing sendVibration() without needing RetroArch/Dolphin --
+    // `adb shell am broadcast -a com.vanzetta.raphnetbridge.TEST_RUMBLE`. Exported (unlike the
+    // USB receivers above) since it's meant to be reachable from adb shell's own UID.
+    private val testRumbleReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            log("TEST_RUMBLE received -- sending real PID rumble START, then STOP after 600ms")
+            thread(name = "test-rumble") {
+                sendVibration(true)
+                Thread.sleep(600)
+                sendVibration(false)
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
@@ -246,10 +260,12 @@ class RaphnetBridgeService : Service() {
         val permFilter = IntentFilter(ACTION_USB_PERMISSION)
         val attachFilter = IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED)
         val detachFilter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        val testRumbleFilter = IntentFilter(ACTION_TEST_RUMBLE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(usbPermissionReceiver, permFilter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(usbAttachReceiver, attachFilter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(usbDetachReceiver, detachFilter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(testRumbleReceiver, testRumbleFilter, Context.RECEIVER_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             registerReceiver(usbPermissionReceiver, permFilter)
@@ -257,6 +273,8 @@ class RaphnetBridgeService : Service() {
             registerReceiver(usbAttachReceiver, attachFilter)
             @Suppress("UnspecifiedRegisterReceiverFlag")
             registerReceiver(usbDetachReceiver, detachFilter)
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(testRumbleReceiver, testRumbleFilter)
         }
 
         Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
@@ -371,33 +389,51 @@ class RaphnetBridgeService : Service() {
             val result = runCatching { injector?.pollForceFeedback(200) ?: -2 }
                 .getOrElse { log("ff poll failed: ${it.message}"); -2 }
             if (result == 0 || result == 1) {
-                log("Force-feedback ${if (result == 1) "PLAY" else "STOP"} -- sending SET_VIBRATION to adapter")
+                log("Force-feedback ${if (result == 1) "PLAY" else "STOP"} -- sending PID rumble report to adapter")
                 sendVibration(result == 1)
             }
         }
     }
 
-    // Real, live-confirmed 2026-08-17: this exact adapter's generic rnt_exchange command
-    // channel didn't answer reads (GET_VERSION/GET_CONTROLLER_TYPE both empty after full
-    // polling) -- but SET_REPORT itself (the write direction) succeeded without error at
-    // every size tried. This is a one-way fire-and-forget write, so it's a real, live,
-    // previously-untested question whether the adapter's firmware acts on it -- log the
-    // controlTransfer result either way so a failure is visible, not silent.
+    // Drives the firmware's real PID effect state machine directly (see the const block above
+    // for why this replaces RQ_RNT_SET_VIBRATION). Each call is a plain Output-Report
+    // SET_REPORT -- fire-and-forget, no GET_REPORT round-trip, so it can't hit the dead
+    // rntlib-channel bug. START chains 3 reports matching usbpad_hid_set_report exactly:
+    //   1) SET_EFFECT   effect#1, duration=0xFFFE (65534ms - NOT the 0xFFFF "infinite" sentinel,
+    //                    which only buys ~2 loops/32ms before auto-stop; a real ~65s duration
+    //                    plus our own explicit STOP on the way out is the correct combination)
+    //   2) SET_CONSTANT_FORCE  effect#1, magnitude=0xFF (>0x7F required by usbpad_mustVibrate)
+    //   3) EFFECT_OPERATION    effect#1, START, loop=1 -> pad->vibration_on=1
+    // STOP is a single EFFECT_OPERATION report -- usbpad.c sets vibration_on=0 immediately,
+    // regardless of remaining loop count.
     private fun sendVibration(on: Boolean) {
         val conn = connection ?: return
         if (hidInterfaceId < 0) return
-        val data = byteArrayOf(RQ_RNT_SET_VIBRATION.toByte(), 0, if (on) 1 else 0)
-        val result = runCatching {
-            conn.controlTransfer(
-                USB_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE,
-                USB_HID_SET_REPORT,
-                (3 shl 8) or 0, // Feature report, report ID 0 -- matches gcn64lib's rnt_exchange
-                hidInterfaceId,
-                data, data.size, 1000,
+
+        fun setReport(reportId: Int, body: ByteArray): Int {
+            val payload = byteArrayOf(reportId.toByte(), *body)
+            return runCatching {
+                conn.controlTransfer(
+                    USB_REQTYPE_HOST_TO_DEVICE_CLASS_INTERFACE,
+                    USB_HID_SET_REPORT,
+                    (HID_REPORT_TYPE_OUTPUT shl 8) or reportId,
+                    hidInterfaceId,
+                    payload, payload.size, 1000,
+                )
+            }.getOrElse { -1 }
+        }
+
+        val results = if (on) {
+            listOf(
+                setReport(REPORT_SET_EFFECT, byteArrayOf(1, 0, 0xFE.toByte(), 0xFF.toByte())),
+                setReport(REPORT_SET_CONSTANT_FORCE, byteArrayOf(1, 0xFF.toByte())),
+                setReport(REPORT_EFFECT_OPERATION, byteArrayOf(1, EFFECT_OP_START.toByte(), 1)),
             )
-        }.getOrElse { log("SET_VIBRATION controlTransfer threw: ${it.message}"); -1 }
-        log("SET_VIBRATION(on=$on) controlTransfer result=$result" +
-            (if (result < 0) " (FAILED -- adapter likely doesn't act on this command)" else ""))
+        } else {
+            listOf(setReport(REPORT_EFFECT_OPERATION, byteArrayOf(1, EFFECT_OP_STOP.toByte(), 0)))
+        }
+        log("PID rumble(on=$on) results=$results" +
+            (if (results.any { it < 0 }) " (one or more FAILED)" else ""))
     }
 
     private var lastLogAtMs = 0L
@@ -517,6 +553,7 @@ class RaphnetBridgeService : Service() {
         runCatching { unregisterReceiver(usbPermissionReceiver) }
         runCatching { unregisterReceiver(usbAttachReceiver) }
         runCatching { unregisterReceiver(usbDetachReceiver) }
+        runCatching { unregisterReceiver(testRumbleReceiver) }
         runCatching { injector?.destroy() }
         runCatching { Shizuku.unbindUserService(userServiceArgs, userServiceConnection, true) }
         runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) }
