@@ -95,7 +95,30 @@ machine on report IDs 1/5/0x0A — a different, simpler channel (plain
 `sendVibration()` now drives that state machine directly (set effect
 duration → set constant-force magnitude → start/stop). Confirmed live
 with the real N64 controller + Rumble Pak — the controller genuinely
-buzzes.
+buzzes, via the app's own `TEST_RUMBLE` debug broadcast:
+```
+adb shell am broadcast -a com.vanzetta.raphnetbridge.TEST_RUMBLE
+```
+
+**But RetroArch itself doesn't trigger it in real gameplay — separate,
+unresolved blocker, not this app's bug.** This adapter fix is genuine
+and proven (above), but a live Zelda OoT session (Mupen64Plus-Next
+core) never got RetroArch to call it on a real hit, even after fixing
+RetroArch's own `enable_device_vibration` config (was `false` — a
+separate, necessary-but-not-sufficient fix) and confirming
+`android.permission.VIBRATE` was granted. Checked both this app's log
+and a raw kernel `getevent` capture on the device node directly
+(bypasses this app entirely) — zero `EV_FF` events reached it on a
+confirmed hit. Matches a known, still-open upstream RetroArch bug
+([libretro/RetroArch#10338](https://github.com/libretro/RetroArch/issues/10338)).
+A real fix landed upstream ([PR #18906](https://github.com/libretro/RetroArch/pull/18906),
+merged 2026-04-07) but requires Android 12's `VibratorManager` (API
+31+) — this Shield is Android 11 (API 30), including its latest
+available OTA, so that fix can't reach this hardware yet. Cross-checked
+against a real PS3 controller too (different device, real `hid-sony`
+kernel driver, not this app's synthetic uinput device) — same silent
+result in a genuine rumble-heavy game (Crash Bash), so this is a
+platform/RetroArch-level gap, not specific to this adapter or app.
 
 <details>
 <summary>Old dead-end writeup (superseded, kept for history)</summary>
